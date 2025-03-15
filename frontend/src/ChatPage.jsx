@@ -294,7 +294,8 @@ function ChatPage() {
     try {
       await axios.post("http://localhost:5000/chat", {
         projectName,
-        message: messageContent,
+        message: message.trim(),
+        files: attachedFiles,
       });
     } catch (error) {
       console.error("Error sending message:", error);
