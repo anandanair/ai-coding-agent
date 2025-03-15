@@ -294,7 +294,7 @@ app.post("/stop-project", async (req, res) => {
 
 // Chat Endpoints
 app.post("/chat", async (req, res) => {
-  const { projectName, message } = req.body;
+  const { projectName, message, files } = req.body;
 
   if (!projectName || !message) {
     return res.status(400).json({
@@ -308,6 +308,11 @@ app.post("/chat", async (req, res) => {
     if (!project) {
       return res.status(404).json({ error: "Project not found" });
     }
+
+    // Append file list to the original message
+    const appendedMessage = `${message}\nFiles:\n${files
+      .map((file) => `- ${file}`)
+      .join("\n")}`;
 
     // Retrieve the conversation record for the project
     const conversation = getConversationByProjectId(project.projectId);
@@ -324,18 +329,16 @@ app.post("/chat", async (req, res) => {
     const clarificationPending = getClarificationState(conversationId);
 
     if (clarificationPending) {
-      addMessage(conversationId, "user", message);
+      addMessage(conversationId, "user", appendedMessage);
       updateConversationLastUpdated(conversationId);
 
       // Build conversation context as an array of formatted messages
       const formattedMessages = getFormattedMessages(conversationId);
 
-      let completeResponse = "";
-      await utilities.assessCodeChangeDetail(
+      const assessResponse = await utilities.assessCodeChangeDetail(
         projectName,
         formattedMessages,
         (chunk) => {
-          completeResponse += chunk;
           // Emit each new chunk to connected clients
           io.to(projectName).emit("newMessage", {
             sender: "assistant",
@@ -345,19 +348,18 @@ app.post("/chat", async (req, res) => {
         }
       );
 
-      // After streaming is complete, update clarification state based on the response
-      if (completeResponse.trim() !== "Sufficient") {
+      if (!assessResponse.isSufficient) {
         // Remain in clarification mode
         setClarificationState(conversationId, true);
-        addMessage(conversationId, "assistant", completeResponse);
+        addMessage(conversationId, "assistant", assessResponse.response);
         updateConversationLastUpdated(conversationId);
         io.to(projectName).emit("newMessage", {
           sender: "assistant",
-          content: completeResponse,
+          content: assessResponse.response,
           done: true,
         });
         return res.json({
-          message: completeResponse,
+          message: assessResponse.response,
           clarificationNeeded: true,
         });
       } else {
@@ -365,21 +367,22 @@ app.post("/chat", async (req, res) => {
         setClarificationState(conversationId, false);
         const successMessage =
           "Code change request received and processing will begin shortly.";
-        addMessage(conversationId, "assistant", successMessage);
-        updateConversationLastUpdated(conversationId);
-        io.to(projectName).emit("newMessage", {
-          sender: "assistant",
-          content: successMessage,
-          done: true,
-        });
+
+        await utilities.generateCode(projectName, formattedMessages);
+
+        // addMessage(conversationId, "assistant", successMessage);
+        // updateConversationLastUpdated(conversationId);
+        // io.to(projectName).emit("newMessage", {
+        //   sender: "assistant",
+        //   content: successMessage,
+        //   done: true,
+        // });
         return res.json({ message: successMessage });
       }
     }
 
     // If not in clarification mode, proceed with normal intent detection
     const intentResult = await utilities.detectIntent(message);
-
-    console.log(intentResult);
 
     // If intentResult contains a message, return it (for general_chat and out_of_scope)
     if (intentResult.message) {
@@ -397,20 +400,17 @@ app.post("/chat", async (req, res) => {
     // If intent is "code_change", process further
     if (intentResult.intent === "code_change") {
       // Store the user's message in the messages table
-      addMessage(conversationId, "user", message);
+      addMessage(conversationId, "user", appendedMessage);
       updateConversationLastUpdated(conversationId);
 
       // Retrieve all messages for context, ordered chronologically
       const conversationMessages = getFormattedMessages(conversationId);
 
-      let completeResponse = "";
-
       // Stream the assistant's response
-      await utilities.assessCodeChangeDetail(
+      const assessResponse = await utilities.assessCodeChangeDetail(
         projectName,
         conversationMessages,
         (chunk) => {
-          completeResponse += chunk;
           io.to(projectName).emit("newMessage", {
             sender: "assistant",
             content: chunk,
@@ -419,36 +419,37 @@ app.post("/chat", async (req, res) => {
         }
       );
 
-      console.log(completeResponse);
-
-      // Once streaming is complete, decide how to respond
-      if (completeResponse.trim() !== "Sufficient") {
+      if (!assessResponse.isSufficient) {
         setClarificationState(conversationId, true);
-        addMessage(conversationId, "assistant", completeResponse);
+        addMessage(conversationId, "assistant", assessResponse.response);
         updateConversationLastUpdated(conversationId);
         io.to(projectName).emit("newMessage", {
           sender: "assistant",
-          content: completeResponse,
+          content: assessResponse.response,
           done: true,
         });
         return res.json({
-          message: completeResponse,
+          message: assessResponse.response,
           clarificationNeeded: true,
         });
       }
 
       // If details are sufficient, proceed with the code change process
+
       const successMessage =
         "Code change request received and processing will begin shortly.";
-      addMessage(conversationId, "assistant", successMessage);
-      updateConversationLastUpdated(conversationId);
 
-      // Emit the success message
-      io.to(projectName).emit("newMessage", {
-        sender: "assistant",
-        content: successMessage,
-        done: true,
-      });
+      await utilities.generateCode(projectName, conversationMessages);
+
+      // addMessage(conversationId, "assistant", successMessage);
+      // updateConversationLastUpdated(conversationId);
+
+      // // Emit the success message
+      // io.to(projectName).emit("newMessage", {
+      //   sender: "assistant",
+      //   content: successMessage,
+      //   done: true,
+      // });
       return res.json({ message: successMessage });
     }
 

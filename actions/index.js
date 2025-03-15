@@ -14,6 +14,7 @@ const actions = {
   initializeProjectRAG: ragActions.initializeProjectRAG,
   deleteQdrantCollection: ragActions.deleteQdrantCollection,
   searchProjectVectors: ragActions.searchProjectVectors,
+  searchProjectMetadata: ragActions.searchProjectMetadata,
 };
 
 module.exports = actions;

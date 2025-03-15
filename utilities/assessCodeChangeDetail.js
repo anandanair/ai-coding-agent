@@ -1,5 +1,6 @@
 const axios = require("axios");
 const { searchProjectVectors } = require("../actions/ragActions");
+const { searchProjectMetadata } = require("../actions/ragActions");
 const ollama = require("ollama").default;
 
 async function assessCodeChangeDetail(
@@ -19,8 +20,12 @@ async function assessCodeChangeDetail(
     // 2. Get embedding for the user's query
     const embedding = await getQueryEmbedding(combinedQuery);
 
-    // 3. Search Qdrant collection
-    const ragContext = await searchProjectVectors(projectName, embedding);
+    // 3. Retrieve both code context and metadata from Qdrant
+    const codeContext = await searchProjectVectors(projectName, embedding);
+    const metadataContext = await searchProjectMetadata(projectName, embedding);
+
+    // Combine both contexts into a single string
+    const ragContext = `Project Metadata:\n${metadataContext}\n\nProject Code Context:\n${codeContext}`;
 
     // 4. Construct system prompt
     const systemPrompt = buildSystemPrompt(ragContext);
@@ -82,6 +87,9 @@ function buildSystemPrompt(ragContext) {
     PROJECT CONTEXT:
     ${ragContext}
 
+    NOTE: The user message includes both the description of the changes and an appended "Files:" section.
+    - If the "Files:" section lists files, the request is for editing existing files.
+    - If the "Files:" section is empty, the request is for a new feature or creating a new file.
 
     ASSESSMENT CRITERIA:
     1. Component details: Does the request specify what component(s) to create or modify?
@@ -91,9 +99,9 @@ function buildSystemPrompt(ragContext) {
     5. Integration: If this adds to existing functionality, is the integration point clear?
 
     REQUIRED RESPONSE FORMAT:
-    - If ALL necessary details are provided, respond ONLY with the word "Sufficient"
-    - If ANY details are missing, respond ONLY with the missing details
-    - Do NOT include any additional text, explanations or suggestions
+    - If ALL necessary details are provided, respond ONLY with the word "Sufficient".
+    - If ANY details are missing, respond ONLY with the missing details, and format your response in markdown.
+    - Do NOT include any additional text, explanations or suggestions.
     <|eot_id|>`;
 }
 

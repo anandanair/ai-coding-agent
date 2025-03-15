@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import axios from "axios";
 import io from "socket.io-client";
@@ -689,7 +689,7 @@ function ChatPage() {
     />
   );
 
-  const AttachedFileChip = ({ filename, onRemove }) => (
+  const AttachedFileChip = React.memo(({ filename, onRemove }) => (
     <div className="inline-flex items-center gap-1 bg-gray-700 text-gray-200 rounded-full px-3 py-1 mr-2 mb-2 text-sm animate-fade-in">
       <svg
         width="12"
@@ -720,7 +720,7 @@ function ChatPage() {
         </svg>
       </button>
     </div>
-  );
+  ));
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100 flex relative">
@@ -798,7 +798,7 @@ function ChatPage() {
                 <div className="flex flex-wrap items-center mb-2 px-1">
                   {attachedFiles.map((file, index) => (
                     <AttachedFileChip
-                      key={index}
+                      key={file}
                       filename={file}
                       onRemove={() => {
                         setAttachedFiles((prev) =>

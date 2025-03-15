@@ -10,46 +10,45 @@ const NAMESPACE = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
 // Create a Qdrant client instance (adjust the URL if needed)
 const qdrantClient = new QdrantClient({ url: "http://localhost:6333" });
 
+const excludedDirs = new Set([
+  "node_modules",
+  "memory",
+  "dist",
+  "build",
+  "coverage",
+  ".git",
+]);
+
+const excludedFiles = new Set([
+  ".gitignore",
+  "package-lock.json",
+  "yarn.lock",
+  ".env",
+  ".env.local",
+  ".DS_Store",
+]);
+
+const excludedExtensions = new Set([
+  ".svg",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".ico",
+  ".log",
+  ".lock",
+  ".zip",
+  ".tar",
+  ".gz",
+  ".pdf",
+  ".docx",
+  ".xlsx",
+]);
+
 // Recursively get all files in the project directory
 function getAllFiles(dir, files = [], projectRoot = dir) {
   // Define exclusion criteria
-  const excludedDirs = new Set([
-    "node_modules",
-    "memory",
-    "dist",
-    "build",
-    "coverage",
-    ".git",
-  ]);
 
-  const excludedFiles = new Set([
-    ".gitignore",
-    "package-lock.json",
-    "yarn.lock",
-    ".env",
-    ".env.local",
-    ".DS_Store",
-  ]);
-
-  const excludedExtensions = new Set([
-    // Images
-    ".svg",
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".gif",
-    ".ico",
-    // Non-code files
-    ".log",
-    ".lock",
-    ".zip",
-    ".tar",
-    ".gz",
-    // Documents
-    ".pdf",
-    ".docx",
-    ".xlsx",
-  ]);
   const items = fs.readdirSync(dir);
 
   items.forEach((item) => {
@@ -202,59 +201,111 @@ function chunkFile(content) {
 }
 
 async function searchProjectVectors(projectName, embedding) {
-  // Search metadata first
-  const metaResults = await qdrantClient.search(`meta_${projectName}`, {
-    vector: embedding,
-    limit: 3,
-    with_payload: true,
-  });
-
   try {
     const codeResults = await qdrantClient.search(`project_${projectName}`, {
       vector: embedding,
       limit: 2,
       with_payload: true,
     });
-
-    return formatResults([...metaResults, ...codeResults]);
+    return formatResults(codeResults);
   } catch (error) {
     console.error("Vector search failed:", error);
     return null;
   }
 }
 
+async function searchProjectMetadata(projectName, embedding) {
+  const metaCollection = `meta_${projectName}`;
+  try {
+    const metaResults = await qdrantClient.search(metaCollection, {
+      vector: embedding,
+      limit: 1, // Assuming there's a single metadata point per project
+      with_payload: true,
+    });
+
+    if (!metaResults || metaResults.length === 0) {
+      console.warn(`No metadata found for project: ${projectName}`);
+      return null;
+    }
+
+    // Return only the metadata portion of the payload
+    return metaResults[0].payload.metadata;
+  } catch (error) {
+    console.error("Error searching metadata in Qdrant:", error);
+    return null;
+  }
+}
+
 async function generateProjectMetadata(projectPath) {
   const metadata = {
+    structure: buildProjectTree(projectPath),
     components: [],
     routes: [],
     stateManagement: null,
     styling: [],
     apis: [],
+    configFiles: [],
+    packageInfo: {},
   };
 
-  // Analyze project files
+  // Get all files in the project
   const files = getAllFiles(projectPath);
-
   files.forEach((file) => {
     const content = fs.readFileSync(file, "utf-8");
+    const relativePath = path.relative(projectPath, file);
 
-    // Simple component detection
+    // Identify components
     if (file.endsWith(".jsx") || file.endsWith(".tsx")) {
       const componentName = path.basename(file, path.extname(file));
       metadata.components.push({
         name: componentName,
-        file: path.relative(projectPath, file),
-        props: extractProps(content), // Implement this function
+        file: relativePath,
+        props: extractProps(content),
+        // Optionally, add other details like hooks usage here.
       });
     }
-
-    // Route detection (simplified)
-    if (file.includes("App.jsx") || file.includes("routes.js")) {
-      const routes = content.match(/path="([^"]+)/g);
-      if (routes) metadata.routes = routes.map((r) => r.split('"')[1]);
+    // Identify styling files
+    else if (file.endsWith(".css") || file.endsWith(".scss")) {
+      metadata.styling.push(relativePath);
+    }
+    // Extract package info from package.json
+    else if (relativePath === "package.json") {
+      try {
+        const pkg = JSON.parse(content);
+        metadata.packageInfo = {
+          dependencies: pkg.dependencies,
+          devDependencies: pkg.devDependencies,
+          scripts: pkg.scripts,
+        };
+      } catch (err) {
+        console.error("Error parsing package.json", err);
+      }
+    }
+    // Identify routes (you may later replace this with an AST parser for more accuracy)
+    else if (/react-router/.test(content) || relativePath.includes("routes")) {
+      const routesMatch = content.match(/path\s*=\s*["']([^"']+)["']/g);
+      if (routesMatch) {
+        const extractedRoutes = routesMatch.map((r) => r.split(/["']/)[1]);
+        metadata.routes.push(...extractedRoutes);
+      }
+    }
+    // Identify potential API calls
+    else if (/axios|fetch/.test(content)) {
+      metadata.apis.push(relativePath);
+    }
+    // Identify config files by name patterns (customize as needed)
+    else if (
+      file.endsWith(".json") &&
+      (relativePath.includes("config") || relativePath.includes("settings"))
+    ) {
+      metadata.configFiles.push(relativePath);
     }
   });
 
+  // Remove duplicate routes if any
+  metadata.routes = Array.from(new Set(metadata.routes));
+
+  // Write the detailed metadata to a JSON file in the memory folder
   const metadataPath = path.join(
     projectPath,
     "memory",
@@ -262,6 +313,35 @@ async function generateProjectMetadata(projectPath) {
   );
   fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
   return metadata;
+}
+
+// Recursively build a tree representation of the project structure
+function buildProjectTree(dir, projectRoot = dir) {
+  const tree = { name: path.basename(dir), children: [] };
+  const items = fs.readdirSync(dir);
+
+  items.forEach((item) => {
+    const fullPath = path.join(dir, item);
+    const relativePath = path.relative(projectRoot, fullPath);
+    const stat = fs.statSync(fullPath);
+
+    if (stat.isDirectory()) {
+      if (excludedDirs.has(item)) return;
+      // Recursively build tree for subdirectories
+      tree.children.push(buildProjectTree(fullPath, projectRoot));
+    } else {
+      const ext = path.extname(item);
+      const shouldExclude =
+        excludedFiles.has(item) ||
+        excludedExtensions.has(ext) ||
+        relativePath === "public/vite.svg";
+      if (!shouldExclude) {
+        tree.children.push({ name: item });
+      }
+    }
+  });
+
+  return tree;
 }
 
 function formatResults(items) {
@@ -299,4 +379,6 @@ module.exports = {
   initializeProjectRAG,
   deleteQdrantCollection,
   searchProjectVectors,
+  searchProjectMetadata,
+  qdrantClient,
 };
