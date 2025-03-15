@@ -1,0 +1,36 @@
+{
+  "name": "ai-coding-agent",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "nodemon --exec node --trace-warnings server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@qdrant/js-client-rest": "^1.13.0",
+    "axios": "^1.8.3",
+    "better-sqlite3": "^11.9.0",
+    "child_process": "^1.0.2",
+    "chromadb": "^2.0.1",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "fs-extra": "^11.3.0",
+    "kill-port": "^2.0.1",
+    "ollama": "^0.5.14",
+    "socket.io": "^4.8.1",
+    "uuidv4": "^6.2.13"
+  },
+  "nodemonConfig": {
+    "ignore": [
+      "projects/",
+      "qdrant-data/",
+      "embedding_service/",
+      "frontend/"
+    ],
+    "delay": 2500
+  }
+}

@@ -1,0 +1,7 @@
+node_modules
+database.sqlite
+projects
+qdrant-data
+embedding_service/.venv
+embedding_service/.vscode
+frontend/node_modules
