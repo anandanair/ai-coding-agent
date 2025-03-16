@@ -3,14 +3,17 @@ const {
   searchProjectMetadata,
   qdrantClient,
 } = require("../actions/ragActions");
+const installPackages = require("../actions/installPackages");
 const fs = require("fs");
 const ollama = require("ollama").default;
 const pathModule = require("path");
 
 async function generateCode(projectName, conversationMessages) {
   try {
+    console.log("Getting files to work on");
     const files = await getWorkingFiles(projectName, conversationMessages);
-    console.log("Files to process:", files);
+
+    console.log(files);
 
     // Loop through each file entry
     for (const fileEntry of files) {
@@ -26,35 +29,72 @@ async function generateCode(projectName, conversationMessages) {
         embedding
       );
 
+      console.log(fileContext);
+
       // 2. Build the system prompt for the code generation model
-      const systemPrompt = buildCodeGenerationPrompt(
-        action,
-        filePath,
-        fileContext
-      );
+      const systemPrompt = buildCodeGenerationPrompt(filePath, fileContext);
 
       // Build the messages array including the system prompt and conversation messages
       const messages = [
         { role: "system", content: systemPrompt },
         ...conversationMessages,
+        {
+          role: "user",
+          content:
+            "Please generate the necessary code changes based on the above context and instructions.",
+        },
       ];
 
       // 3. Call the code generation model to produce the code changes
+      // let fullResponse = "";
+
       const response = await ollama.chat({
-        model: "qwen2.5-coder",
+        // model: "deepseek-coder:33b-instruct-q4_0",
+        // model: "deepseek-coder:6.7b",
+        model: "deepseek-coder:6.7b-instruct-q8_0",
+        // model: "phind-codellama",
+        // model: "phind-codellama",
+        // model: "phind-codellama",
+        // model: "phind-codellama",
         messages: messages,
         stream: false,
       });
 
-      // 4. Process the response to get the generated code
-      const generatedCode = response.message.content.trim();
-      console.log(`Generated code for ${filePath}:`, generatedCode);
+      // // Iterate over the stream and update the output live
+      // for await (const chunk of response) {
+      //   if (chunk.message && typeof chunk.message.content === "string") {
+      //     fullResponse += chunk.message.content;
+      //     // Clear the current line and move the cursor to the start
+      //     process.stdout.clearLine();
+      //     process.stdout.cursorTo(0);
+      //     process.stdout.write(fullResponse);
+      //   }
+
+      //   if (chunk.done) {
+      //     break;
+      //   }
+      // }
+
+      // 4. Process and sanitize the response to get the generated code
+      const rawGeneratedCode = response.message.content.trim();
+      console.log("\nFinal Generated Code:\n", rawGeneratedCode);
+      const generatedCode = sanitizeGeneratedCode(rawGeneratedCode);
+      await installPackages(projectName, generateCode);
+      // console.log(`Generated code for ${filePath}:`, generatedCode);
 
       // 5. Execute the appropriate tool based on action (edit or create)
       if (action === "edit") {
         await editFile(projectName, filePath, generatedCode);
+        return {
+          success: true,
+          message: `Code changes have been made on file: ${filePath}`,
+        };
       } else if (action === "create") {
         await createFile(projectName, filePath, generatedCode);
+        return {
+          success: true,
+          message: `New file has been created: ${filePath}`,
+        };
       }
     }
   } catch (error) {
@@ -70,19 +110,29 @@ async function getQueryEmbedding(query) {
   return response.data.embedding;
 }
 
-// Helper function: Build a system prompt for code generation
-function buildCodeGenerationPrompt(action, filePath, fileContext) {
-  return `<|begin_of_text|>
-<|start_header_id|>system<|end_header_id|>
-You are an AI assistant tasked with generating code changes for a Vite + React project.
-ACTION: ${action.toUpperCase()}
+function buildCodeGenerationPrompt(filePath, fileContext) {
+  return `You are a highly experienced AI coding assistant specializing in Vite + React projects using Tailwind CSS.
+PROJECT CONTEXT:
+- Vite + React project
+- Exclusive Tailwind CSS styling
+- Follow React & Tailwind best practices
+- STRICT CODE-ONLY RESPONSE REQUIRED
+
 TARGET FILE: ${filePath}
 FILE CONTEXT:
 ${fileContext}
 
-Based on the developer conversation and the file context provided, generate the code modifications or new code needed.
-Provide ONLY the code changes required, and do not include any extra text or explanations.
-<|eot_id|>`;
+INSTRUCTIONS:
+1. Generate ONLY valid, production-ready code for the specified file
+2. ABSOLUTELY NO explanations, comments, or non-code text
+3. No markdown formatting (no \`\`\`, no code blocks)
+4. Output must be directly applicable code changes only
+5. Use Tailwind CSS classes exclusively for styling
+6. Maintain existing code structure where appropriate
+
+WARNING: Your response must contain ONLY code. Any non-code text will break the build process. 
+
+Respond with pure code changes for ${filePath}:`;
 }
 
 async function getWorkingFiles(projectName, conversationMessages) {
@@ -99,8 +149,6 @@ async function getWorkingFiles(projectName, conversationMessages) {
       metadata && metadata.structure
         ? JSON.stringify(metadata.structure, null, 2)
         : "";
-
-    console.log(projectStructure);
 
     // 4. Append a new user message instructing the model to decide on file changes
     const fileDecisionMessage = {
@@ -187,25 +235,36 @@ async function getWorkingFiles(projectName, conversationMessages) {
   }
 }
 
-// Helper function: Retrieve file-specific context from Qdrant by filtering on filePath
-async function searchProjectVectorsForFile(projectName, filePath, embedding) {
+async function searchProjectVectorsForFile(
+  projectName,
+  relativeFilePath,
+  embedding
+) {
+  // Convert relative path (e.g., "src/App.jsx") to absolute path
+  const fullFilePath = pathModule.join(
+    getProjectDirectory(projectName),
+    relativeFilePath
+  );
   try {
-    // Example: Search in the project's code collection with a filter for the given file path
     const results = await qdrantClient.search(`project_${projectName}`, {
       vector: embedding,
       limit: 1,
       filter: {
-        must: [{ key: "filePath", match: { value: filePath } }],
+        must: [{ key: "filePath", match: { value: fullFilePath } }],
       },
       with_payload: true,
     });
     if (results && results.length > 0) {
-      // Return the snippet or other context from the first result
       return results[0].payload.snippet || "";
     }
     return "";
   } catch (error) {
-    console.error("Error retrieving file context for", filePath, ":", error);
+    console.error(
+      "Error retrieving file context for",
+      fullFilePath,
+      ":",
+      error
+    );
     return "";
   }
 }
@@ -239,6 +298,27 @@ async function createFile(projectName, filePath, newCode) {
 
 function getProjectDirectory(projectName) {
   return pathModule.join(process.cwd(), "projects", projectName);
+}
+
+function sanitizeGeneratedCode(code) {
+  code = code.trim();
+
+  // Try to extract code from the first markdown code fence block.
+  const codeFenceRegex = /```(?:\w+)?\s*([\s\S]*?)\s*```/;
+  const match = code.match(codeFenceRegex);
+  if (match && match[1]) {
+    code = match[1].trim();
+  }
+
+  // Remove wrapping double or single quotes if they exist.
+  if (
+    (code.startsWith('"') && code.endsWith('"')) ||
+    (code.startsWith("'") && code.endsWith("'"))
+  ) {
+    code = code.slice(1, -1).trim();
+  }
+
+  return code;
 }
 
 module.exports = generateCode;

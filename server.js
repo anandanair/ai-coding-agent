@@ -86,7 +86,7 @@ app.post("/create-project", async (req, res) => {
           message: "Installing dependencies...",
         });
         // Step 2: Install dependencies inside the created project
-        exec(`cd ${projectPath} && npm install`, async (installError) => {
+        exec(`cd ${projectPath} && npm install`, (installError) => {
           if (installError) {
             console.error("Error installing dependencies:", installError);
             io.to(socketId).emit("projectUpdate", {
@@ -98,72 +98,191 @@ app.post("/create-project", async (req, res) => {
           }
 
           io.to(socketId).emit("projectUpdate", {
-            message: "Dependencies installed.",
+            message:
+              "Dependencies installed. Installing additional packages (react-router-dom and tailwindcss)...",
           });
           console.log(`📦 Dependencies installed for "${projectName}"`);
 
-          try {
-            let project = getProjectByName(projectName);
-            let projectId;
-            if (!project) {
-              projectId = createProject(projectName);
+          // Step 3: Install react-router-dom and tailwindcss
+          exec(
+            `cd ${projectPath} && npm install react-router-dom tailwindcss @tailwindcss/vite`,
+            async (additionalError) => {
+              if (additionalError) {
+                console.error(
+                  "Error installing additional packages:",
+                  additionalError
+                );
+                io.to(socketId).emit("projectUpdate", {
+                  message: "Error installing additional packages.",
+                });
+                return res.status(500).json({
+                  error: "Failed to install additional packages",
+                });
+              }
+
               io.to(socketId).emit("projectUpdate", {
-                message: `Inserted project with ID: ${projectId}`,
+                message: "Additional packages installed.",
               });
-              console.log(`Inserted project with ID: ${projectId}`);
-            } else {
-              projectId = project.projectId;
+              console.log(
+                `🚀 Additional packages installed for "${projectName}"`
+              );
+
+              // Step 4: Update vite.config.js to include Tailwind CSS configuration
+              const viteConfigPath = path.join(projectPath, "vite.config.js");
+              fs.readFile(viteConfigPath, "utf8", (readErr, data) => {
+                if (readErr) {
+                  console.error("Error reading vite.config.js:", readErr);
+                  io.to(socketId).emit("projectUpdate", {
+                    message: "Error reading vite.config.js",
+                  });
+                } else {
+                  let modifiedData = data;
+                  // Add the Tailwind CSS import if it doesn't exist
+                  if (
+                    !modifiedData.includes(
+                      "import tailwindcss from '@tailwindcss/vite'"
+                    )
+                  ) {
+                    modifiedData = modifiedData.replace(
+                      "import react from '@vitejs/plugin-react'",
+                      "import react from '@vitejs/plugin-react'\nimport tailwindcss from '@tailwindcss/vite'"
+                    );
+                  }
+                  // Modify the plugins array to include tailwindcss()
+                  if (modifiedData.includes("plugins: [react()]")) {
+                    modifiedData = modifiedData.replace(
+                      "plugins: [react()]",
+                      "plugins: [react(), tailwindcss()]"
+                    );
+                  }
+                  fs.writeFile(
+                    viteConfigPath,
+                    modifiedData,
+                    "utf8",
+                    (writeErr) => {
+                      if (writeErr) {
+                        console.error(
+                          "Error updating vite.config.js:",
+                          writeErr
+                        );
+                        io.to(socketId).emit("projectUpdate", {
+                          message: "Error updating vite.config.js",
+                        });
+                      } else {
+                        io.to(socketId).emit("projectUpdate", {
+                          message: "vite.config.js updated with Tailwind CSS",
+                        });
+                        console.log("✅ vite.config.js updated.");
+                      }
+                    }
+                  );
+                }
+              });
+
+              // Step 5: Update the main CSS file (assumed at src/index.css) to import Tailwind CSS
+              const mainCssPath = path.join(projectPath, "src", "index.css");
+              fs.readFile(mainCssPath, "utf8", (cssReadErr, cssData) => {
+                if (cssReadErr) {
+                  console.error("Error reading main CSS file:", cssReadErr);
+                  io.to(socketId).emit("projectUpdate", {
+                    message: "Error reading main CSS file",
+                  });
+                } else {
+                  let modifiedCss = cssData;
+                  // Prepend the Tailwind CSS import if it doesn't exist
+                  if (!modifiedCss.includes('@import "tailwindcss";')) {
+                    modifiedCss = `@import "tailwindcss";\n` + modifiedCss;
+                  }
+                  fs.writeFile(
+                    mainCssPath,
+                    modifiedCss,
+                    "utf8",
+                    (cssWriteErr) => {
+                      if (cssWriteErr) {
+                        console.error(
+                          "Error updating main CSS file:",
+                          cssWriteErr
+                        );
+                        io.to(socketId).emit("projectUpdate", {
+                          message: "Error updating main CSS file",
+                        });
+                      } else {
+                        io.to(socketId).emit("projectUpdate", {
+                          message:
+                            "Main CSS file updated with Tailwind CSS import",
+                        });
+                        console.log("✅ Main CSS file updated.");
+                      }
+                    }
+                  );
+                }
+              });
+
+              // Step 6: Continue with project initialization (database, memory, RAG, etc.)
+              try {
+                let project = getProjectByName(projectName);
+                let projectId;
+                if (!project) {
+                  projectId = createProject(projectName);
+                  io.to(socketId).emit("projectUpdate", {
+                    message: `Inserted project with ID: ${projectId}`,
+                  });
+                  console.log(`Inserted project with ID: ${projectId}`);
+                } else {
+                  projectId = project.projectId;
+                }
+
+                // Create a conversation for this project (single persistent conversation)
+                const conversationId = uuidv4();
+                createConversation(conversationId, projectId);
+
+                // Retrieve project structure
+                const structure = actions.getProjectStructure(projectName);
+
+                io.to(socketId).emit("projectUpdate", {
+                  message: "Initializing project Memory.",
+                });
+                // Initialize project memory
+                await actions.updateProjectMemory(projectPath, {
+                  projectStructure: {
+                    lastUpdated: new Date().toISOString(),
+                    files: structure.structure,
+                  },
+                  features: {},
+                  components: {},
+                  functions: {},
+                  history: [],
+                  nextSteps: [],
+                });
+
+                io.to(socketId).emit("projectUpdate", {
+                  message: "Project memory initialized.",
+                });
+
+                // Initialize project RAG
+                io.to(socketId).emit("projectUpdate", {
+                  message: "Initializing project context with RAG.",
+                });
+
+                await actions.initializeProjectRAG(projectName, projectPath);
+
+                io.to(socketId).emit("projectUpdate", {
+                  message: "Project context initialized with RAG.",
+                });
+
+                res.json({
+                  message: `Project "${projectName}" is ready to use!`,
+                  projectPath,
+                });
+              } catch (dbErr) {
+                io.to(socketId).emit("projectUpdate", {
+                  message: "Database error encountered.",
+                });
+                console.error("Database error inserting project:", dbErr);
+                // Optionally handle the error (cleanup the created project) or proceed.
+              }
             }
-
-            // Create a conversation for this project (single persistent conversation)
-            const conversationId = uuidv4();
-            createConversation(conversationId, projectId);
-
-            // Retrieve project structure
-            const structure = actions.getProjectStructure(projectName);
-
-            io.to(socketId).emit("projectUpdate", {
-              message: "Initializing project Memory.",
-            });
-            // Initialize project memory
-            await actions.updateProjectMemory(projectPath, {
-              projectStructure: {
-                lastUpdated: new Date().toISOString(),
-                files: structure.structure,
-              },
-              features: {},
-              components: {},
-              functions: {},
-              history: [],
-              nextSteps: [],
-            });
-
-            io.to(socketId).emit("projectUpdate", {
-              message: "Project memory initialized.",
-            });
-
-            // Initialize project RAG
-            io.to(socketId).emit("projectUpdate", {
-              message: "Initializing project context with RAG.",
-            });
-
-            await actions.initializeProjectRAG(projectName, projectPath);
-
-            io.to(socketId).emit("projectUpdate", {
-              message: "Project context initialized with RAG.",
-            });
-
-            res.json({
-              message: `Project "${projectName}" is ready to use!`,
-              projectPath,
-            });
-          } catch (dbErr) {
-            io.to(socketId).emit("projectUpdate", {
-              message: "Database error encountered.",
-            });
-            console.error("Database error inserting project:", dbErr);
-            // Optionally handle the error (cleanup the created project) or proceed.
-          }
+          );
         });
       }
     );
@@ -247,7 +366,7 @@ app.post("/start-project", async (req, res) => {
 
   try {
     // Start the Vite server in the project directory
-    const child = exec(`cd ${projectPath} && npm run dev -- --port ${port}`, {
+    exec(`cd ${projectPath} && npm run dev -- --port ${port}`, {
       detached: true,
       stdio: "ignore",
     });
@@ -348,6 +467,8 @@ app.post("/chat", async (req, res) => {
         }
       );
 
+      console.log(assessResponse);
+
       if (!assessResponse.isSufficient) {
         // Remain in clarification mode
         setClarificationState(conversationId, true);
@@ -367,22 +488,28 @@ app.post("/chat", async (req, res) => {
         setClarificationState(conversationId, false);
         const successMessage =
           "Code change request received and processing will begin shortly.";
+        io.to(projectName).emit("newMessage", {
+          sender: "assistant",
+          content: successMessage,
+          done: true,
+        });
 
-        await utilities.generateCode(projectName, formattedMessages);
+        const response = await utilities.generateCode(
+          projectName,
+          formattedMessages
+        );
 
         // addMessage(conversationId, "assistant", successMessage);
         // updateConversationLastUpdated(conversationId);
-        // io.to(projectName).emit("newMessage", {
-        //   sender: "assistant",
-        //   content: successMessage,
-        //   done: true,
-        // });
-        return res.json({ message: successMessage });
+
+        return res.json({ message: response.message });
       }
     }
 
     // If not in clarification mode, proceed with normal intent detection
     const intentResult = await utilities.detectIntent(message);
+
+    console.log(intentResult);
 
     // If intentResult contains a message, return it (for general_chat and out_of_scope)
     if (intentResult.message) {
@@ -419,6 +546,8 @@ app.post("/chat", async (req, res) => {
         }
       );
 
+      console.log(assessResponse);
+
       if (!assessResponse.isSufficient) {
         setClarificationState(conversationId, true);
         addMessage(conversationId, "assistant", assessResponse.response);
@@ -439,18 +568,22 @@ app.post("/chat", async (req, res) => {
       const successMessage =
         "Code change request received and processing will begin shortly.";
 
-      await utilities.generateCode(projectName, conversationMessages);
+      // // Emit the success message
+      io.to(projectName).emit("newMessage", {
+        sender: "assistant",
+        content: successMessage,
+        done: true,
+      });
+
+      const response = await utilities.generateCode(
+        projectName,
+        conversationMessages
+      );
 
       // addMessage(conversationId, "assistant", successMessage);
       // updateConversationLastUpdated(conversationId);
 
-      // // Emit the success message
-      // io.to(projectName).emit("newMessage", {
-      //   sender: "assistant",
-      //   content: successMessage,
-      //   done: true,
-      // });
-      return res.json({ message: successMessage });
+      return res.json({ message: response.message });
     }
 
     // Handle any unexpected cases

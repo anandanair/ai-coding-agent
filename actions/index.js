@@ -3,6 +3,7 @@ const getProjectMemory = require("./getProjectMemory");
 const updateProjectFile = require("./updateProjectFile");
 const updateProjectMemory = require("./updateProjectMemory");
 const ragActions = require("./ragActions");
+const installPackages = require("./installPackages");
 
 const actions = {
   getProjectStructure: (projectName) => getProjectStructure(projectName),
@@ -15,6 +16,8 @@ const actions = {
   deleteQdrantCollection: ragActions.deleteQdrantCollection,
   searchProjectVectors: ragActions.searchProjectVectors,
   searchProjectMetadata: ragActions.searchProjectMetadata,
+  installPackages: (projectName, generatedCode) =>
+    installPackages(projectName, generatedCode),
 };
 
 module.exports = actions;
